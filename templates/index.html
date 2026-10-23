@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Live text analyzer built with Go 1.23 and HTMX, deployed to Google Cloud Run and Render by GitHub Actions.">
+  <meta name="color-scheme" content="light dark">
+  <title>Text Analyzer · Go + HTMX</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%237c3aed'/><path d='M9 21l5-10 4 7 2-3 3 6' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <script src="https://unpkg.com/htmx.org@2.0.3" integrity="sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq" crossorigin="anonymous"></script>
+  <!-- Tailwind v4 browser build: no Node, no build step. It also styles the HTML that HTMX swaps in. -->
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.3/dist/index.global.js" integrity="sha384-2ql948lIdLcGEE0/qxNiudyTjgauA3RDJERu5xW75kFCvSl5a9odyQYCb6tEjnmB" crossorigin="anonymous"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    /* Fade swapped-in fragments; htmx adds .htmx-added during settle. */
+    @media (prefers-reduced-motion: no-preference) {
+      #results > * { transition: opacity 200ms ease, translate 200ms ease; }
+      #results > .htmx-added { opacity: 0; translate: 0 4px; }
+    }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="min-h-screen bg-white font-sans text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100">
+  <!-- Soft background glow -->
+  <div aria-hidden="true" class="pointer-events-none fixed inset-x-0 top-0 -z-10 h-[480px] bg-[radial-gradient(60%_50%_at_50%_0%,rgba(124,58,237,0.14),transparent)] dark:bg-[radial-gradient(60%_50%_at_50%_0%,rgba(139,92,246,0.22),transparent)]"></div>
+
+  <header class="sticky top-0 z-10 border-b border-zinc-200/70 bg-white/70 backdrop-blur-md dark:border-zinc-800/70 dark:bg-zinc-950/70">
+    <div class="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
+      <a href="/" class="flex items-center gap-2 font-semibold tracking-tight">
+        <span class="grid size-7 place-items-center rounded-lg bg-violet-600 text-white shadow-sm shadow-violet-600/30">
+          <svg viewBox="0 0 24 24" class="size-4" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l5-10 4 7 2-3 3 6"/></svg>
+        </span>
+        Text Analyzer
+      </a>
+      {{if .Platform}}
+      <span class="inline-flex items-center gap-2 rounded-full border border-emerald-600/20 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-300">
+        <span class="relative flex size-2">
+          <span class="absolute inline-flex size-full rounded-full bg-emerald-500 opacity-75 motion-safe:animate-ping"></span>
+          <span class="relative inline-flex size-2 rounded-full bg-emerald-500"></span>
+        </span>
+        <span class="whitespace-nowrap">Live on {{.Platform}}</span>{{with .Instance}}<span class="hidden whitespace-nowrap sm:inline"> · <code class="font-mono">{{.}}</code></span>{{end}}
+      </span>
+      {{else}}
+      <span class="inline-flex items-center gap-2 rounded-full border border-zinc-300 bg-zinc-50 px-2.5 py-1 text-xs font-medium text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+        <span class="size-2 rounded-full bg-zinc-400"></span>
+        Running locally
+      </span>
+      {{end}}
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-6xl px-4 pt-12 pb-20 sm:px-6 sm:pt-16">
+    <section class="mx-auto max-w-2xl text-center">
+      <p class="inline-flex items-center rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold tracking-wide text-violet-700 ring-1 ring-violet-600/15 ring-inset dark:bg-violet-400/10 dark:text-violet-300 dark:ring-violet-400/20">
+        Hacktoberfest Hack Day Buea 2026
+      </p>
+      <h1 class="mt-5 text-4xl font-bold tracking-tight text-balance sm:text-5xl">
+        Analyze text as you type,
+        <span class="bg-gradient-to-r from-violet-600 to-fuchsia-500 bg-clip-text text-transparent dark:from-violet-400 dark:to-fuchsia-400">rendered on the server.</span>
+      </h1>
+    </section>
+
+    <div class="mt-12 grid gap-6 lg:grid-cols-5 lg:items-start">
+      <!-- Input -->
+      <form id="analyze-form"
+        hx-post="/analyze"
+        hx-target="#results"
+        hx-swap="innerHTML"
+        hx-trigger="submit, input changed delay:400ms from:#text, keydown[(metaKey||ctrlKey)&&key=='Enter'] from:#text"
+        hx-sync="this:replace"
+        hx-indicator="#analyze-btn"
+        class="rounded-2xl border border-zinc-200 bg-white/80 p-2 shadow-sm backdrop-blur lg:col-span-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+        <label for="text" class="sr-only">Text to analyze</label>
+        <textarea id="text" name="text" rows="12" autofocus spellcheck="true"
+          placeholder="Paste a paragraph, a README, or your hackathon pitch..."
+          class="block w-full resize-y rounded-xl border-0 bg-transparent p-4 text-base leading-relaxed placeholder:text-zinc-400 focus:ring-0 focus:outline-none dark:placeholder:text-zinc-500"></textarea>
+        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200 px-3 pt-3 pb-1 dark:border-zinc-800">
+          <p class="text-xs text-zinc-500 dark:text-zinc-400">
+            Updates as you type · or press
+            <kbd class="rounded border border-zinc-300 bg-zinc-50 px-1.5 py-0.5 font-sans text-[11px] font-medium dark:border-zinc-700 dark:bg-zinc-800">Ctrl</kbd>
+            <kbd class="rounded border border-zinc-300 bg-zinc-50 px-1.5 py-0.5 font-sans text-[11px] font-medium dark:border-zinc-700 dark:bg-zinc-800">Enter</kbd>
+          </p>
+          <div class="flex items-center gap-2">
+            <button type="reset"
+              hx-on:click="setTimeout(() => htmx.trigger('#analyze-form', 'submit'))"
+              class="rounded-lg px-3 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-600 dark:text-zinc-300 dark:hover:bg-zinc-800">
+              Clear
+            </button>
+            <button id="analyze-btn" type="submit"
+              class="group inline-flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-violet-600/25 transition hover:bg-violet-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-600 active:scale-[0.98] disabled:opacity-60">
+              <svg class="hidden size-4 in-[.htmx-request]:block motion-safe:animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"/><path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+              Analyze
+            </button>
+          </div>
+        </div>
+      </form>
+
+      <!-- Results: the server swaps the "results" fragment in here. -->
+      <section aria-labelledby="results-heading" class="lg:sticky lg:top-20 lg:col-span-2">
+        <h2 id="results-heading" class="sr-only">Results</h2>
+        <div id="results" aria-live="polite">{{template "results" .Results}}</div>
+      </section>
+    </div>
+
+    <!-- How it works -->
+    <section class="mt-20">
+      <h2 class="text-center text-sm font-semibold tracking-wide text-zinc-500 uppercase dark:text-zinc-400">How this page ships</h2>
+      <ol class="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <li class="rounded-2xl border border-zinc-200 p-5 dark:border-zinc-800">
+          <span class="text-xs font-semibold text-violet-600 dark:text-violet-400">01 · Push</span>
+          <p class="mt-2 font-medium">git push origin main</p>
+          <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Triggers the GitHub Actions workflow.</p>
+        </li>
+        <li class="rounded-2xl border border-zinc-200 p-5 dark:border-zinc-800">
+          <span class="text-xs font-semibold text-violet-600 dark:text-violet-400">02 · Test</span>
+          <p class="mt-2 font-medium">go vet &amp; go test</p>
+          <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Every push runs the same checks.</p>
+        </li>
+        <li class="rounded-2xl border border-zinc-200 p-5 dark:border-zinc-800">
+          <span class="text-xs font-semibold text-violet-600 dark:text-violet-400">03 · Package</span>
+          <p class="mt-2 font-medium">Containerfile → ghcr.io</p>
+          <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Distroless, non-root, tagged with the commit SHA.</p>
+        </li>
+        <li class="rounded-2xl border border-zinc-200 p-5 dark:border-zinc-800">
+          <span class="text-xs font-semibold text-violet-600 dark:text-violet-400">04 · Deploy</span>
+          <p class="mt-2 font-medium">Cloud Run + Render</p>
+          <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Same image to both: keyless OIDC for Cloud Run, a deploy hook for Render.</p>
+        </li>
+      </ol>
+
+    </section>
+  </main>
+
+  <footer class="border-t border-zinc-200 dark:border-zinc-800">
+    <div class="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-6 text-sm text-zinc-500 sm:flex-row sm:items-center sm:justify-between sm:px-6 dark:text-zinc-400">
+      <p>Norbel Ambanumben</p>
+      <p>Version <code class="font-mono" data-version>{{.Version}}</code></p>
+    </div>
+  </footer>
+</body>
+</html>

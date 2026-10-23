@@ -1,0 +1,178 @@
+name: build-and-deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege by default; jobs that need more ask for it.
+permissions:
+  contents: read
+
+jobs:
+  # Stage 1: compile and static checks.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - run: go vet ./...
+      - run: CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/app .
+
+  # Stage 2: unit tests.
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - run: go test -v ./...
+
+  # Stage 3: package the Containerfile and publish it to ghcr.io.
+  # Registry only: no cloud provider steps, so every deploy target reuses this image.
+  artifact-registry:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.names.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # ghcr.io needs lowercase names; github.repository may contain uppercase.
+      - name: Compute image name
+        id: names
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # Buildx is required for the type=gha layer cache.
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Containerfile
+          # amd64 for Cloud Run, Render and CI; arm64 for Apple Silicon and ARM servers.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.names.outputs.image }}:${{ github.sha }}
+            ${{ steps.names.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.names.outputs.version }}
+
+  # Stage 4: keyless deploy to Cloud Run.
+  deploy-cloudrun:
+    needs: artifact-registry
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      REGION: europe-west1
+      SERVICE: go-htmx-hackday
+    # Never run two deploys at once; the newest push wins.
+    concurrency:
+      group: deploy-cloudrun-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      # The auth step writes its credentials file into the workspace, which later
+      # gcloud, docker and deploy-cloudrun steps read. Checkout gives it a workspace
+      # and silences the "GitHub workspace is empty" warning.
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud via OIDC
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      # Cloud Run cannot pull from ghcr.io directly. It pulls the same image through
+      # an Artifact Registry remote repo that proxies ghcr.io (docs/cloud-run-setup.md).
+      # The project ID comes from the GCP_PROJECT_ID variable if set, otherwise
+      # from the service account the auth step used.
+      - name: Compute Cloud Run image name
+        id: names
+        env:
+          GHCR_IMAGE: ${{ needs.artifact-registry.outputs.image }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID || steps.auth.outputs.project_id }}
+        run: |
+          if [ -z "$PROJECT_ID" ]; then
+            echo "::error::No Google Cloud project ID. Set the repository variable GCP_PROJECT_ID (a variable, not a secret)."
+            exit 1
+          fi
+          if [ -z "$GHCR_IMAGE" ]; then
+            echo "::error::The artifact-registry job did not output an image name."
+            exit 1
+          fi
+          RUN_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/ghcr/${GHCR_IMAGE#ghcr.io/}"
+          echo "Cloud Run image: ${RUN_IMAGE}:${GITHUB_SHA}"
+          echo "project_id=${PROJECT_ID}" >> "$GITHUB_OUTPUT"
+          echo "run_image=${RUN_IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # Pulling through the proxy caches the image and fails with a clear error
+      # if the ghcr package is still private, before Cloud Run tries.
+      - name: Pull image through Artifact Registry proxy
+        run: |
+          gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+          docker pull ${{ steps.names.outputs.run_image }}:${{ github.sha }}
+
+      - name: Deploy Container to Google Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE }}
+          region: ${{ env.REGION }}
+          image: ${{ steps.names.outputs.run_image }}:${{ github.sha }}
+          # Runtime identity with no roles by default; see docs/cloud-run-setup.md.
+          flags: >-
+            --allow-unauthenticated --port=8080 --memory=256Mi
+            --service-account=go-htmx-runtime@${{ steps.names.outputs.project_id }}.iam.gserviceaccount.com
+
+      - run: echo "Live at ${{ steps.deploy.outputs.url }}"
+
+  # Stage 4b: deploy the same image to Render through its deploy hook.
+  # Runs alongside the Cloud Run deploy; see docs/render-setup.md.
+  deploy-render:
+    needs: artifact-registry
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-render-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Trigger Render deploy of this commit's image
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::notice::RENDER_DEPLOY_HOOK_URL is not set; skipping the Render deploy."
+            exit 0
+          fi
+          # Pin the deploy to this commit's tag, not :latest.
+          IMAGE="${{ needs.artifact-registry.outputs.image }}:${GITHUB_SHA}"
+          curl -fsS -X POST "${HOOK}&imgURL=$(jq -rn --arg v "$IMAGE" '$v|@uri')"
+          echo
+          echo "Render deploy triggered for ${IMAGE}"

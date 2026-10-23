@@ -1,0 +1,34 @@
+{{define "results"}}
+{{if .Empty}}
+<div class="flex flex-col items-center rounded-2xl border border-dashed border-zinc-300 px-6 py-14 text-center dark:border-zinc-700">
+  <span class="grid size-11 place-items-center rounded-full bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+    <svg viewBox="0 0 24 24" class="size-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h7"/></svg>
+  </span>
+  <p class="mt-4 font-medium">Nothing to analyze yet.</p>
+  <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Start typing and the stats appear here.</p>
+</div>
+{{else}}
+<div class="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+  <dl class="grid grid-cols-2 gap-3">
+    <div class="flex flex-col-reverse rounded-xl bg-zinc-50 p-4 dark:bg-zinc-800/60"><dt class="text-xs font-medium text-zinc-500 dark:text-zinc-400">Words</dt><dd class="text-2xl font-semibold tracking-tight tabular-nums" data-stat="words">{{.Words}}</dd></div>
+    <div class="flex flex-col-reverse rounded-xl bg-zinc-50 p-4 dark:bg-zinc-800/60"><dt class="text-xs font-medium text-zinc-500 dark:text-zinc-400">Characters</dt><dd class="text-2xl font-semibold tracking-tight tabular-nums" data-stat="characters">{{.Characters}}</dd></div>
+    <div class="flex flex-col-reverse rounded-xl bg-zinc-50 p-4 dark:bg-zinc-800/60"><dt class="text-xs font-medium text-zinc-500 dark:text-zinc-400">Sentences</dt><dd class="text-2xl font-semibold tracking-tight tabular-nums" data-stat="sentences">{{.Sentences}}</dd></div>
+    <div class="flex flex-col-reverse rounded-xl bg-zinc-50 p-4 dark:bg-zinc-800/60"><dt class="text-xs font-medium text-zinc-500 dark:text-zinc-400">Reading time</dt><dd class="text-2xl font-semibold tracking-tight tabular-nums" data-stat="reading">{{.ReadingMinutes}} min</dd></div>
+  </dl>
+  {{if .TopWords}}
+  <h3 class="mt-6 mb-3 text-xs font-semibold tracking-wide text-zinc-500 uppercase dark:text-zinc-400">Top words</h3>
+  <ul class="space-y-2.5">
+    {{range .TopWords}}
+    <li>
+      <div class="flex items-baseline justify-between text-sm"><code class="font-medium">{{.Word}}</code><span class="text-zinc-500 tabular-nums dark:text-zinc-400" data-count="{{.Count}}">{{.Count}}</span></div>
+      <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800"><div class="h-full rounded-full bg-gradient-to-r from-violet-600 to-fuchsia-500" style="width: {{.Percent}}%"></div></div>
+    </li>
+    {{end}}
+  </ul>
+  {{end}}
+  {{if .Elapsed}}
+  <p class="mt-5 border-t border-zinc-200 pt-3 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">Rendered by Go in <span class="font-medium tabular-nums">{{.Elapsed}}</span></p>
+  {{end}}
+</div>
+{{end}}
+{{end}}

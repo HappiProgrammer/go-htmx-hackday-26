@@ -1,3 +1,5 @@
 /app
 /bin/
 *.out
+docs/slides.html
+docs/slides.pdf

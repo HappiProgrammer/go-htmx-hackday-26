@@ -14,6 +14,13 @@ A Go 1.23 + HTMX text analyzer. It ships as a ~10 MB distroless image to ghcr.io
 
 Both run the same image from the same commit. The page footer shows the commit's short SHA, and the header badge shows which platform served the page.
 
+## Workshop slides
+
+The deck is [docs/slides.md](docs/slides.md), written in [Marp](https://marp.app) Markdown. GitHub shows it as a long Markdown page. To present it:
+
+- **VS Code:** install the Marp for VS Code extension and open the file. Turn on the `markdown.marp.enableHtml` setting, because the deck uses HTML for its column layouts.
+- **CLI:** `make slides` writes `docs/slides.html`. `make slides-pdf` writes `docs/slides.pdf`, which needs Chrome.
+
 ## Slide to file map
 
 | Slide | File |
